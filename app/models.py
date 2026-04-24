@@ -41,3 +41,14 @@ class SphereResponse(BaseModel):
     calculated_y: float
     calculated_z: float
     relations: list[dict]
+
+
+class ProjectionInput(BaseModel):
+    source_id: int
+    target_id: int
+    radius: float
+    filter_mode: str = "both"
+
+
+class ProjectionQuery(BaseModel):
+    projections: list[ProjectionInput]

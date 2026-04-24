@@ -3,8 +3,10 @@ from app.database import get_db, init_db
 from app.models import (
     CenterCreate, CenterResponse,
     SphereCreate, SphereUpdate, SphereResponse,
+    ProjectionQuery,
 )
 from app.calc import calculate_position
+from app.projection import query_projection as calc_projection
 
 router = APIRouter(prefix="/api")
 
@@ -159,6 +161,43 @@ def delete_sphere(sphere_id: int):
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+# --- 投影查询 API ---
+
+@router.post("/projections/query")
+def query_projections(data: ProjectionQuery):
+    conn = get_db()
+    all_spheres = conn.execute("SELECT * FROM resource_spheres").fetchall()
+    sphere_list = [dict(r) for r in all_spheres]
+
+    result_map = {}
+
+    for idx, proj in enumerate(data.projections):
+        source = conn.execute(
+            "SELECT * FROM resource_spheres WHERE id = ?", (proj.source_id,)
+        ).fetchone()
+        target = conn.execute(
+            "SELECT * FROM resource_spheres WHERE id = ?", (proj.target_id,)
+        ).fetchone()
+        if not source or not target:
+            continue
+
+        source_pos = (source["calculated_x"], source["calculated_y"], source["calculated_z"])
+        target_pos = (target["calculated_x"], target["calculated_y"], target["calculated_z"])
+
+        candidates = [s for s in sphere_list if s["id"] != proj.source_id and s["id"] != proj.target_id]
+        matches = calc_projection(candidates, source_pos, target_pos, proj.radius, proj.filter_mode)
+
+        for sphere, match_type in matches:
+            sid = sphere["id"]
+            if sid not in result_map:
+                result_map[sid] = {"sphere": sphere, "matched_by": [], "match_types": []}
+            result_map[sid]["matched_by"].append(idx)
+            result_map[sid]["match_types"].append(match_type)
+
+    conn.close()
+    return {"results": list(result_map.values())}
 
 
 # --- 内部辅助函数 ---
