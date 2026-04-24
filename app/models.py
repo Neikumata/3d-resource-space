@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CenterCreate(BaseModel):
@@ -40,6 +40,7 @@ class SphereResponse(BaseModel):
     calculated_x: float
     calculated_y: float
     calculated_z: float
+    is_solved: int = 0
     relations: list[dict]
 
 
@@ -52,3 +53,13 @@ class ProjectionInput(BaseModel):
 
 class ProjectionQuery(BaseModel):
     projections: list[ProjectionInput]
+
+
+class SolveQuery(BaseModel):
+    anchor_center_id: int
+    radius: float
+    target_sphere_id: int | None = None
+    target_sphere_ids: list[int] = Field(default_factory=list)
+    reference_sphere_ids: list[int] = Field(default_factory=list)
+    samples: int = 2000
+    save_as_name: str | None = None

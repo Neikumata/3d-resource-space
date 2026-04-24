@@ -345,6 +345,11 @@ select.input-field {
     color: #1a1a2e;
 }
 
+.btn-solve {
+    background: linear-gradient(90deg, #ffee00, #ff6b00);
+    color: #1a1a2e;
+}
+
 .projection-tag {
     display: flex;
     justify-content: space-between;
