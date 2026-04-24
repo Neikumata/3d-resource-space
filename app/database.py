@@ -30,7 +30,8 @@ def init_db():
             radius REAL NOT NULL DEFAULT 1.0,
             calculated_x REAL NOT NULL DEFAULT 0.0,
             calculated_y REAL NOT NULL DEFAULT 0.0,
-            calculated_z REAL NOT NULL DEFAULT 0.0
+            calculated_z REAL NOT NULL DEFAULT 0.0,
+            is_solved INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS relations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,5 +43,9 @@ def init_db():
             UNIQUE(sphere_id, center_id)
         );
     """)
+    # 旧库迁移：resource_spheres 缺 is_solved 列时补上
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(resource_spheres)").fetchall()]
+    if "is_solved" not in cols:
+        conn.execute("ALTER TABLE resource_spheres ADD COLUMN is_solved INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     conn.close()

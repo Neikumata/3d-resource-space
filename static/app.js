@@ -8,6 +8,7 @@ let projections = [];
 let projectionMeshes = [];
 let projectionResults = [];
 let currentFilterMode = "both";
+let solveObjects = [];
 
 // ==================== Three.js 初始化 ====================
 function initScene() {
@@ -216,6 +217,97 @@ function highlightProjectionResults() {
     });
 }
 
+// ==================== 求解问题球 3D 可视化 ====================
+function clearSolveVisualization() {
+    solveObjects.forEach(obj => {
+        scene.remove(obj);
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+            if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+            else obj.material.dispose();
+        }
+    });
+    solveObjects = [];
+}
+
+function drawSolveVisualization(result, anchorPos, radius, targetPositions) {
+    clearSolveVisualization();
+
+    // 锚定球面（线框）——展示问题球的候选所在面
+    const sphereGeo = new THREE.SphereGeometry(radius, 24, 16);
+    const sphereMat = new THREE.MeshBasicMaterial({
+        color: 0x8899ff, wireframe: true, transparent: true, opacity: 0.18,
+    });
+    const sphereMesh = new THREE.Mesh(sphereGeo, sphereMat);
+    sphereMesh.position.set(anchorPos[0], anchorPos[1], anchorPos[2]);
+    scene.add(sphereMesh);
+    solveObjects.push(sphereMesh);
+
+    // 候选点云：按 fitness 上色（绿=好 → 红=差）
+    const candidates = result.candidates || [];
+    if (candidates.length > 0) {
+        const fits = candidates.map(c => c.fitness);
+        const minFit = Math.min(...fits);
+        const maxFit = Math.max(...fits);
+        const range = (maxFit - minFit) || 1;
+
+        const positions = [];
+        const colors = [];
+        candidates.forEach(c => {
+            positions.push(c.position[0], c.position[1], c.position[2]);
+            const t = (c.fitness - minFit) / range;
+            colors.push(t, 1 - t, 0.2);
+        });
+
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+        geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+        const mat = new THREE.PointsMaterial({
+            size: 0.12, vertexColors: true, transparent: true, opacity: 0.8,
+        });
+        const pts = new THREE.Points(geo, mat);
+        scene.add(pts);
+        solveObjects.push(pts);
+    }
+
+    // 置信度椭球：用 fitness 最好的前 5% 候选点拟合出的误差范围
+    if (result.confidence) {
+        const cp = result.confidence.center;
+        const cr = result.confidence.radii;
+        const ellipsoidGeo = new THREE.SphereGeometry(1, 32, 16);
+        const ellipsoidMat = new THREE.MeshBasicMaterial({
+            color: 0xffffff, wireframe: true, transparent: true, opacity: 0.35,
+        });
+        const ellipsoid = new THREE.Mesh(ellipsoidGeo, ellipsoidMat);
+        ellipsoid.position.set(cp[0], cp[1], cp[2]);
+        ellipsoid.scale.set(cr[0], cr[1], cr[2]);
+        scene.add(ellipsoid);
+        solveObjects.push(ellipsoid);
+    }
+
+    // 最优解位置 + 从它到每个目标球的方向射线
+    if (result.best) {
+        const bp = result.best.position;
+        const bestGeo = new THREE.SphereGeometry(0.22, 20, 20);
+        const bestMat = new THREE.MeshBasicMaterial({ color: 0xffee00 });
+        const bestMesh = new THREE.Mesh(bestGeo, bestMat);
+        bestMesh.position.set(bp[0], bp[1], bp[2]);
+        scene.add(bestMesh);
+        solveObjects.push(bestMesh);
+
+        targetPositions.forEach((targetPos) => {
+            const lineGeo = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(bp[0], bp[1], bp[2]),
+                new THREE.Vector3(targetPos[0], targetPos[1], targetPos[2]),
+            ]);
+            const lineMat = new THREE.LineBasicMaterial({ color: 0xffee00 });
+            const line = new THREE.Line(lineGeo, lineMat);
+            scene.add(line);
+            solveObjects.push(line);
+        });
+    }
+}
+
 // ==================== API 调用 ====================
 async function apiGet(path) {
     const res = await fetch(path);
@@ -352,6 +444,125 @@ function validateProjections(spheres) {
     projections = projections.filter(p => validIds.has(p.source_id) && validIds.has(p.target_id));
 }
 
+// ==================== 求解问题球 UI ====================
+function renderSolveOptions(centers, spheres) {
+    const anchorSel = document.getElementById("solve-anchor");
+    const anchorVal = anchorSel.value;
+    anchorSel.innerHTML = '<option value="">选择中心点...</option>' +
+        centers.map(c => `<option value="${c.id}">${c.name} (${c.x}, ${c.y}, ${c.z})</option>`).join("");
+    anchorSel.value = anchorVal;
+
+    const targetContainer = document.getElementById("solve-targets");
+    const checkedTargets = new Set(
+        Array.from(targetContainer.querySelectorAll(".solve-target-check:checked"))
+            .map(c => parseInt(c.dataset.sphereId))
+    );
+    targetContainer.innerHTML = "";
+    if (spheres.length === 0) {
+        targetContainer.innerHTML = '<div style="color:#666;font-size:12px;">暂无资源球</div>';
+    } else {
+        spheres.forEach(s => {
+            const div = document.createElement("div");
+            div.className = "relation-item";
+            div.innerHTML = `
+                <input type="checkbox" data-sphere-id="${s.id}" class="solve-target-check" ${checkedTargets.has(s.id) ? "checked" : ""}>
+                <span class="center-label">${s.name} (${s.calculated_x.toFixed(1)}, ${s.calculated_y.toFixed(1)}, ${s.calculated_z.toFixed(1)})</span>
+            `;
+            targetContainer.appendChild(div);
+        });
+    }
+
+    const refContainer = document.getElementById("solve-references");
+    const checked = new Set(
+        Array.from(refContainer.querySelectorAll(".solve-ref-check:checked"))
+            .map(c => parseInt(c.dataset.sphereId))
+    );
+    refContainer.innerHTML = "";
+    if (spheres.length === 0) {
+        refContainer.innerHTML = '<div style="color:#666;font-size:12px;">暂无资源球</div>';
+        return;
+    }
+    spheres.forEach(s => {
+        const div = document.createElement("div");
+        div.className = "relation-item";
+        div.innerHTML = `
+            <input type="checkbox" data-sphere-id="${s.id}" class="solve-ref-check" ${checked.has(s.id) ? "checked" : ""}>
+            <span class="center-label">${s.name} (${s.calculated_x.toFixed(1)}, ${s.calculated_y.toFixed(1)}, ${s.calculated_z.toFixed(1)})</span>
+        `;
+        refContainer.appendChild(div);
+    });
+}
+
+async function runSolve() {
+    const anchorId = parseInt(document.getElementById("solve-anchor").value);
+    const radius = parseFloat(document.getElementById("solve-radius").value);
+    const samples = parseInt(document.getElementById("solve-samples").value) || 2000;
+    const saveAsName = document.getElementById("solve-save-name").value.trim();
+    const targetIds = Array.from(
+        document.querySelectorAll("#solve-targets .solve-target-check:checked")
+    ).map(c => parseInt(c.dataset.sphereId));
+    const refs = Array.from(
+        document.querySelectorAll("#solve-references .solve-ref-check:checked")
+    ).map(c => parseInt(c.dataset.sphereId));
+
+    if (!anchorId) return alert("请选择锚定中心点");
+    if (!radius || radius <= 0) return alert("请输入有效模长");
+    if (targetIds.length === 0) return alert("请选择至少一个方向参考目标球");
+    if (targetIds.some(id => refs.includes(id))) return alert("方向目标球不能同时作为路径参考球");
+
+    const resultDiv = document.getElementById("solve-result");
+    resultDiv.textContent = "求解中…";
+
+    try {
+        const data = await apiPost("/api/solve", {
+            anchor_center_id: anchorId,
+            radius,
+            target_sphere_ids: targetIds,
+            reference_sphere_ids: refs,
+            samples,
+            save_as_name: saveAsName || null,
+        });
+
+        const anchorMesh = centerMeshes[anchorId];
+        const targetMeshes = targetIds.map(id => sphereMeshes[id]).filter(Boolean);
+        if (!anchorMesh || targetMeshes.length !== targetIds.length) {
+            resultDiv.textContent = "锚点或目标球不在场景中";
+            return;
+        }
+        drawSolveVisualization(
+            data,
+            [anchorMesh.position.x, anchorMesh.position.y, anchorMesh.position.z],
+            radius,
+            targetMeshes.map(m => [m.position.x, m.position.y, m.position.z])
+        );
+
+        if (data.best) {
+            const p = data.best.position;
+            const hint = data.best.fitness < 1e-6 ? " (完美对准)" : "";
+            const conf = data.confidence;
+            const confText = conf
+                ? `<br>置信椭球: center=(${conf.center.map(v => v.toFixed(2)).join(", ")}), radii=(${conf.radii.map(v => v.toFixed(2)).join(", ")})`
+                : "";
+            const savedText = data.saved_sphere ? `<br>已保存: ${data.saved_sphere.name}` : "";
+            resultDiv.innerHTML =
+                `最优解: (${p[0].toFixed(2)}, ${p[1].toFixed(2)}, ${p[2].toFixed(2)})<br>` +
+                `残差: ${data.best.fitness.toFixed(4)}${hint}<br>` +
+                `候选点数: ${data.candidates.length}` +
+                confText +
+                savedText;
+            if (data.saved_sphere) {
+                document.getElementById("solve-save-name").value = "";
+                await loadAll();
+            }
+        } else {
+            resultDiv.textContent = "未找到候选解";
+        }
+    } catch (e) {
+        resultDiv.textContent = "";
+        alert(e.message);
+    }
+}
+
 // ==================== 加载全部数据 ====================
 async function loadAll() {
     // 清空场景
@@ -372,6 +583,7 @@ async function loadAll() {
     renderRelationOptions(centers);
     renderElementList(centers, spheres);
     renderProjectionOptions(spheres);
+    renderSolveOptions(centers, spheres);
     validateProjections(spheres);
     renderProjectionCylinders();
     if (projections.length > 0) {
@@ -654,6 +866,13 @@ function bindEvents() {
             btn.classList.add("active");
             currentFilterMode = btn.dataset.mode;
         });
+    });
+
+    // 求解 - 执行
+    document.getElementById("btn-solve").addEventListener("click", runSolve);
+    document.getElementById("btn-solve-clear").addEventListener("click", () => {
+        clearSolveVisualization();
+        document.getElementById("solve-result").textContent = "";
     });
 
     // 投影 - 添加投影

@@ -3,10 +3,11 @@ from app.database import get_db, init_db
 from app.models import (
     CenterCreate, CenterResponse,
     SphereCreate, SphereUpdate, SphereResponse,
-    ProjectionQuery,
+    ProjectionQuery, SolveQuery,
 )
 from app.calc import calculate_position
 from app.projection import query_projection as calc_projection
+from app.solver import solve_sphere
 
 router = APIRouter(prefix="/api")
 
@@ -198,6 +199,101 @@ def query_projections(data: ProjectionQuery):
 
     conn.close()
     return {"results": list(result_map.values())}
+
+
+# --- 求解问题球 API ---
+
+@router.post("/solve")
+def solve(data: SolveQuery):
+    if data.radius <= 0:
+        raise HTTPException(status_code=400, detail="模长必须大于 0")
+    if data.samples < 1 or data.samples > 20000:
+        raise HTTPException(status_code=400, detail="采样数应在 1~20000 之间")
+    target_ids = list(data.target_sphere_ids)
+    if data.target_sphere_id is not None and data.target_sphere_id not in target_ids:
+        target_ids.insert(0, data.target_sphere_id)
+    if not target_ids:
+        raise HTTPException(status_code=400, detail="至少需要一个方向目标球")
+    if set(target_ids) & set(data.reference_sphere_ids):
+        raise HTTPException(status_code=400, detail="方向目标球不能同时作为路径参考球")
+
+    conn = get_db()
+    anchor = conn.execute(
+        "SELECT x, y, z FROM center_points WHERE id = ?", (data.anchor_center_id,)
+    ).fetchone()
+    if not anchor:
+        conn.close()
+        raise HTTPException(status_code=400, detail="锚定中心点不存在")
+
+    target_placeholders = ",".join("?" * len(target_ids))
+    target_rows = conn.execute(
+        f"SELECT id, calculated_x, calculated_y, calculated_z FROM resource_spheres WHERE id IN ({target_placeholders})",
+        target_ids,
+    ).fetchall()
+    if len(target_rows) != len(set(target_ids)):
+        conn.close()
+        raise HTTPException(status_code=400, detail="方向目标球不存在")
+    target_by_id = {r["id"]: r for r in target_rows}
+    ordered_targets = [target_by_id[tid] for tid in target_ids]
+
+    refs = []
+    if data.reference_sphere_ids:
+        placeholders = ",".join("?" * len(data.reference_sphere_ids))
+        rows = conn.execute(
+            f"SELECT id, calculated_x, calculated_y, calculated_z, radius FROM resource_spheres WHERE id IN ({placeholders})",
+            data.reference_sphere_ids,
+        ).fetchall()
+        if len(rows) != len(set(data.reference_sphere_ids)):
+            conn.close()
+            raise HTTPException(status_code=400, detail="路径参考球不存在")
+        refs = [
+            {"pos": (r["calculated_x"], r["calculated_y"], r["calculated_z"]), "radius": r["radius"]}
+            for r in rows
+        ]
+
+    result = solve_sphere(
+        anchor=(anchor["x"], anchor["y"], anchor["z"]),
+        radius=data.radius,
+        target_positions=[
+            (t["calculated_x"], t["calculated_y"], t["calculated_z"])
+            for t in ordered_targets
+        ],
+        references=refs,
+        samples=data.samples,
+    )
+    result["target_sphere_ids"] = target_ids
+    result["saved_sphere"] = None
+
+    if data.save_as_name and result["best"]:
+        name = data.save_as_name.strip()
+        if not name:
+            conn.close()
+            raise HTTPException(status_code=400, detail="保存名称不能为空")
+        try:
+            p = result["best"]["position"]
+            cursor = conn.execute(
+                "INSERT INTO resource_spheres (name, radius, calculated_x, calculated_y, calculated_z, is_solved) VALUES (?, ?, ?, ?, ?, 1)",
+                (name, data.radius, p[0], p[1], p[2]),
+            )
+            sphere_id = cursor.lastrowid
+            conn.execute(
+                "INSERT INTO relations (sphere_id, center_id, weight) VALUES (?, ?, ?)",
+                (sphere_id, data.anchor_center_id, 1.0),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM resource_spheres WHERE id = ?", (sphere_id,)).fetchone()
+            rels = conn.execute(
+                "SELECT center_id, weight FROM relations WHERE sphere_id = ?", (sphere_id,),
+            ).fetchall()
+            saved = dict(row)
+            saved["relations"] = [dict(r) for r in rels]
+            result["saved_sphere"] = saved
+        except Exception:
+            conn.close()
+            raise HTTPException(status_code=400, detail="保存失败，名称可能已存在")
+
+    conn.close()
+    return result
 
 
 # --- 内部辅助函数 ---

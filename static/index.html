@@ -65,6 +65,27 @@
                     <div id="projection-result-list"></div>
                 </div>
             </div>
+            <!-- 求解问题球 -->
+            <div class="panel-section">
+                <h3 class="section-title">🎯 求解问题球</h3>
+                <div class="section-label">锚定中心点：</div>
+                <select id="solve-anchor" class="input-field">
+                    <option value="">选择中心点...</option>
+                </select>
+                <div class="section-label">模长（距锚点距离）：</div>
+                <input id="solve-radius" type="number" value="3" step="0.1" min="0.1" class="input-field">
+                <div class="section-label">方向参考目标球（可多选）：</div>
+                <div id="solve-targets" class="relation-list"></div>
+                <div class="section-label">路径参考球（勾选多个）：</div>
+                <div id="solve-references" class="relation-list"></div>
+                <div class="section-label">采样点数：</div>
+                <input id="solve-samples" type="number" value="2000" step="500" min="100" max="20000" class="input-field">
+                <div class="section-label">保存为资源球（可选）：</div>
+                <input id="solve-save-name" type="text" placeholder="例如：Solved-A" class="input-field">
+                <button id="btn-solve" class="btn btn-solve">开始求解</button>
+                <button id="btn-solve-clear" class="btn btn-cancel" style="margin-top:6px;">清除求解结果</button>
+                <div id="solve-result" class="coord-preview"></div>
+            </div>
             <!-- 元素列表 -->
             <div class="panel-section">
                 <h3 class="section-title">元素列表</h3>
